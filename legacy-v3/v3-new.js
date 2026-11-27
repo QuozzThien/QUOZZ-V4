@@ -188,21 +188,25 @@
     return [...new Set(out)];
   }
 
+  // Làm sạch chữ từ bank cũ: bỏ "í" thừa đứng trước số (phần hiển thị MathJax), gộp khoảng trắng
+  const fixT = t => String(t == null ? '' : t).replace(/í(?=[\d,.])/g, '').replace(/\s+/g, ' ').trim();
   function canon(raw) {
     const out = [];
     for (const r of raw || []) {
       if (!r || !r.q) continue;
       if (r.type === 'sa' || r.answers) {
-        const ans = (r.answers || [].concat(r.a == null ? [] : r.a)).map(x => String(x).trim()).filter(Boolean);
-        if (ans.length) out.push({ type: 'sa', q: String(r.q), ans, parts: [String(r.q)] });
+        const ans = (r.answers || [].concat(r.a == null ? [] : r.a)).map(fixT).filter(Boolean);
+        // đáp án điền số: chỉ lấy phần số (bỏ đơn vị và các mảnh công thức còn sót)
+        const num = ans.length ? (ans[0].match(/^[\d.,]+/) || [ans[0]])[0] : '';
+        if (num) out.push({ type: 'sa', q: fixT(r.q), ans: [num], parts: [fixT(r.q)] });
         continue;
       }
       if (r.type === 'tf' || r.stmts) {
-        const st = (r.stmts || []).map(s => ({ t: stripLabel(s.t), v: !!s.v })).filter(s => s.t);
-        if (st.length) out.push({ type: 'tf', q: String(r.q), st, parts: [String(r.q), ...st.map(s => s.t)] });
+        const st = (r.stmts || []).map(s => ({ t: fixT(stripLabel(s.t)), v: !!s.v })).filter(s => s.t);
+        if (st.length) out.push({ type: 'tf', q: fixT(r.q), st, parts: [fixT(r.q), ...st.map(s => s.t)] });
       } else {
-        const opts = (r.opts || []).map(stripLabel), a = resolveAns(r.a, opts);
-        if (opts.length >= 2 && a.length) out.push({ type: 'mc', q: String(r.q), opts, a, parts: [String(r.q), ...opts] });
+        const opts = (r.opts || []).map(o => fixT(stripLabel(o))), a = resolveAns(r.a, opts);
+        if (opts.length >= 2 && a.length) out.push({ type: 'mc', q: fixT(r.q), opts, a, parts: [fixT(r.q), ...opts] });
       }
     }
     return out;
@@ -1171,7 +1175,7 @@
         if (/^Đáp án được chấp nhận/i.test(txt(e)) && t) out.push(t);
       }
     }
-    return [...new Set(out)];
+    return out.length ? [out.join('')] : [];
   }
 
   async function extractReviewV2(report) {
@@ -1181,7 +1185,7 @@
     const clean = el => {
       if (!el) return '';
       const c = el.cloneNode(true);
-      c.querySelectorAll('.aza-badge,.aza-ui,script,style,.katex-mathml').forEach(x => x.remove());
+      c.querySelectorAll('.aza-badge,.aza-ui,script,style,.katex-mathml,mjx-math').forEach(x => x.remove());
       return c.textContent.normalize('NFC').replace(/\s+/g, ' ').trim();
     };
     const id = (b,i) => b.getAttribute('data-sticky-question-id') || b.querySelector('[data-sticky-question-id]')?.getAttribute('data-sticky-question-id') || 'index-'+i;
