@@ -844,12 +844,58 @@
     !!document.querySelector('button.btn-sm.btn-primary') &&
     findBlocks().length > 0;
 
+  // ---- Chẩn đoán: so từng đáp án/ý của ngân hàng với trang, để báo cáo đủ thông tin sửa trong một lượt ----
+  const VERSION = 'v3-diag-2';
+  const plainOf = (el, n) => textOf(el).replace(/\s+/g, ' ').trim().slice(0, n);
+  const tokCover = (target, text) => {
+    const T = new Set(tok(target)); if (!T.size) return 0;
+    const R = new Set(tok(text)); let k = 0; for (const t of T) if (R.has(t)) k++;
+    return k / T.size;
+  };
+  function bestRowFor(cands, target) {
+    let best = null, bs = -1;
+    for (const c of cands) { const sc = tokCover(target, textOf(c)); if (sc > bs) { bs = sc; best = c; } }
+    return { el: best, s: bs < 0 ? 0 : bs };
+  }
+  function diagBlock(bl, S, m, rk, ids) {
+    const out = [];
+    out.push('Đề đã đọc (văn bản): ' + S.text.replace(/\s+/g, ' ').trim().slice(0, 300));
+    const top = rk.slice(0, 3);
+    out.push('Ngân hàng khớp đề: ' + (ids.length ? 'CÓ' : 'KHÔNG') + ' · top: ' +
+      (top.length ? top.map(r => '#' + r.i + '(' + r.c.toFixed(2) + ') "' + BK[r.i].q.slice(0, 50) + '"').join(' | ') : '-'));
+    const ref = m || (top[0] ? BK[top[0].i] : null);
+    if (!ref) return out.join('\n');
+    out.push('So với ' + (m ? 'câu đã chọn' : 'câu gần nhất trong ngân hàng') + ':');
+    if (ref.type === 'mc') {
+      const rows = [...bl.el.querySelectorAll('.item-answer')];
+      out.push('  hàng đáp án trên trang: ' + rows.length);
+      ref.opts.forEach((o, k) => {
+        const hit = rowByContain(rows, o);
+        const best = bestRowFor(rows, o);
+        out.push('  [' + 'ABCD'[k] + '] ngân hàng: "' + o.slice(0, 60) + '" · khớp chính xác: ' + (hit ? 'có' : 'không') +
+          ' · hàng gần nhất (' + best.s.toFixed(2) + '): "' + (best.el ? plainOf(best.el, 60) : '-') + '"');
+      });
+    } else if (ref.type === 'tf') {
+      const cands = [...bl.el.querySelectorAll('div')].filter(d => [...d.querySelectorAll('button')].filter(isTF).length === 2);
+      out.push('  hàng Đúng/Sai trên trang: ' + cands.length);
+      ref.st.forEach(st => {
+        const hit = rowByContain(cands, st.t);
+        const best = bestRowFor(cands, st.t);
+        out.push('  ý ngân hàng: "' + st.t.slice(0, 60) + '" · khớp chính xác: ' + (hit ? 'có' : 'không') +
+          ' · hàng gần nhất (' + best.s.toFixed(2) + '): "' + (best.el ? plainOf(best.el, 60) : '-') + '"');
+      });
+    } else if (ref.type === 'sa') {
+      out.push('  ô nhập trên trang: ' + (bl.el.querySelector('input,textarea') ? 'có' : 'KHÔNG') + ' · đáp án bank: "' + ref.ans[0] + '"');
+    }
+    return out.join('\n');
+  }
+
   // Báo cáo các câu không tự click được: lý do + HTML của khối câu (để gửi lại khi cần chẩn đoán)
   let lastReport = '';
   function buildFailReport(failed, skipped, snap) {
     const blocks = findBlocks();
     const lines = [
-      'AZOTA AUTO · báo cáo lỗi (trang cuộn)',
+      'AZOTA AUTO · báo cáo lỗi (trang cuộn) · ' + VERSION,
       'Trang: ' + location.href,
       'Thời điểm: ' + new Date().toLocaleString(),
       'Không có trong bank: ' + (skipped.length ? skipped.join(', ') : '-'),
@@ -860,21 +906,21 @@
       ...failed.map(f => ({ no: parseInt(f, 10), why: f.replace(/^\d+\s*/, '') })),
       ...skipped.map(n => ({ no: +n, why: 'không có trong ngân hàng' })),
     ].sort((a, b) => a.no - b.no);
+    const cnt = {};
+    for (const it of items) { const k = it.why.replace(/\(.*$/, '').replace(/["“].*$/, '').trim(); cnt[k] = (cnt[k] || 0) + 1; }
+    lines.splice(5, 0, 'Tóm tắt: ' + (Object.keys(cnt).map(k => cnt[k] + ' × ' + k).join(' · ') || 'không có lỗi'));
     for (const it of items) {
       const no = it.no;
       const bl = blocks.find(b => +b.no === no);
       lines.push('--- Câu ' + no + ' ---');
       lines.push('Lý do: ' + it.why);
+      if (snap['diag' + no]) { lines.push('[Chẩn đoán]'); lines.push(snap['diag' + no]); }
+      const txt = bl ? plainOf(bl.el, 500) : '';
+      if (txt) { lines.push('[Đề dạng chữ]'); lines.push(txt); }
       const html = snap[no] || (bl ? bl.el.outerHTML : '');
-      if (html) {
-        lines.push('[Đề]');
-        lines.push(html.length > 2000 ? html.slice(0, 2000) + ' …(đã cắt)' : html);
-      }
+      if (html) { lines.push('[Đề HTML]'); lines.push(html.length > 1200 ? html.slice(0, 1200) + ' …(đã cắt)' : html); }
       const ans = snap['ans' + no] || '';
-      if (ans) {
-        lines.push('[Đáp án]');
-        lines.push(ans.length > 5000 ? ans.slice(0, 5000) + ' …(đã cắt)' : ans);
-      }
+      if (ans) { lines.push('[Đáp án HTML]'); lines.push(ans.length > 4000 ? ans.slice(0, 4000) + ' …(đã cắt)' : ans); }
       lines.push('');
     }
     return lines.join('\n');
@@ -905,8 +951,10 @@
         bl.el.scrollIntoView({ block: 'center' }); await sleep(300);
         NM.clear(); CMM.clear();
         const S = blockNodes(bl.el);
-        const ids = decide(rank(S.text));
+        const rk = rank(S.text);
+        const ids = decide(rk);
         const m = ids.length ? BK[ids[0]] : null;
+        snap['diag' + no] = diagBlock(bl, S, m, rk, ids);
         if (!m) { skipped.push(no); continue; }
         logAuto(`Câu ${no}: ${m.type}`);
         if (m.type === 'mc') {
