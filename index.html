@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QUOZZ V4</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#000;color:#00ff9c;font-family:monospace}
+canvas{position:fixed;inset:0;width:100%;height:100%;opacity:.75}
+#intro{position:fixed;inset:0;display:grid;place-items:center;background:#000}
+.terminal{position:relative;width:min(92vw,420px);padding:22px 16px;background:#000d;border:1px solid #00ff9c;border-radius:8px;box-shadow:0 0 28px #00ff9c88}
+pre{font:clamp(11px,3.1vw,14px)/1.8 monospace;white-space:pre-wrap;overflow-wrap:anywhere;min-height:10em;text-shadow:0 0 6px #00ff9c}
+h1{position:relative;text-align:center;font-size:clamp(22px,6vw,36px);letter-spacing:2px;text-shadow:0 0 15px #00ff9c}
+h1:not([hidden])::before,h1:not([hidden])::after{content:attr(data-text);position:absolute;inset:0}
+h1::before{color:#ff2bd6;clip-path:inset(0 0 55% 0);animation:glitch .9s infinite}
+h1::after{color:#00e5ff;clip-path:inset(55% 0 0 0);animation:glitch 1.3s infinite reverse}
+@keyframes glitch{0%,100%{transform:none}50%{transform:translateX(3px)}}
+button,a{display:block;margin:16px auto;padding:12px;color:#00ff9c;background:#061512;border:1px solid currentColor;border-radius:8px;font:inherit;text-align:center;text-decoration:none}
+[hidden]{display:none!important}
+main{padding:40px 20px;text-align:center}
+@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+<main>
+<h2>QUOZZ CONTROL CENTER V4</h2>
+<a href="./azota-modules/admin.html">QUẢN TRỊ THƯƠNG HIỆU</a>
+<a href="./azota-modules/demo.html">DEMO GIAO DIỆN</a>
+<button onclick="location.reload()">XEM LẠI INTRO</button>
+</main>
+
+<section id="intro">
+<canvas id="matrix"></canvas>
+<div class="terminal">
+<pre id="log"></pre>
+<h1 id="access" data-text="ACCESS GRANTED" hidden>ACCESS GRANTED</h1>
+<button id="enter" hidden>[ chạm để vào ]</button>
+</div>
+</section>
+
+<script>
+const cv=document.getElementById('matrix');
+const ctx=cv.getContext('2d');
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const chars='01ABCDEF#$%&アイウエオカキクケコサシスセソ';
+let drops=[];
+function resize(){
+ cv.width=innerWidth;
+ cv.height=innerHeight;
+ drops=Array.from({length:Math.ceil(cv.width/14)},()=>Math.random()*-30);
+}
+resize();
+addEventListener('resize',resize);
+const rain=ctx&&!reduce?setInterval(()=>{
+ if(document.hidden)return;
+ ctx.fillStyle='rgba(0,0,0,.14)';
+ ctx.fillRect(0,0,cv.width,cv.height);
+ ctx.fillStyle='#00ff9c';
+ ctx.font='14px monospace';
+ drops.forEach((y,i)=>{
+ ctx.fillText(chars[Math.random()*chars.length|0],i*14,y*14);
+ drops[i]=y*14>cv.height&&Math.random()>.96?0:y+1;
+ });
+},40):0;
+
+const text=[
+ '> QUOZZ // V4',
+ '> khởi tạo giao diện ...... [ OK ]',
+ '> terminal neon .......... [ OK ]',
+ '> hệ thống hiển thị ...... [ OK ]',
+ '> sẵn sàng.'
+].join('\n');
+
+let i=0;
+let timer=0;
+function done(){
+ clearInterval(timer);
+ document.getElementById('log').textContent=text;
+ document.getElementById('access').hidden=false;
+ document.getElementById('enter').hidden=false;
+}
+if(reduce)done();
+else timer=setInterval(()=>{
+ document.getElementById('log').textContent=text.slice(0,++i);
+ if(i>=text.length)done();
+},16);
+
+document.getElementById('enter').onclick=()=>{
+ clearInterval(rain);
+ clearInterval(timer);
+ removeEventListener('resize',resize);
+ document.getElementById('intro').remove();
+};
+</script>
+</body>
+</html>
