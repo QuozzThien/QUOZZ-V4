@@ -546,8 +546,8 @@
 
   // Chế độ luyện tập = có nút Kiểm tra / Thử lại / Câu tiếp
   // Chỉ chạy auto ở bài luyện tập từng câu. Bài cuộn (có nút "Nộp bài" nhỏ ở thanh trên) không được hỗ trợ.
-  const isPractice = () => true;
-    !!document.querySelector('[azt-track-service^="take-training"]') &&
+  const isPractice = () => 
+    !!document.querySelector('[azt-track-service^="true"]') &&
     !!getProgress() &&
     !document.querySelector('button.btn-sm.btn-primary') &&
     (!!findBtn(/^(Kiểm tra|Thử lại|Câu tiếp|Tiếp theo|Xem kết quả)$/i) || !!primaryBtn());
