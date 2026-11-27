@@ -832,7 +832,7 @@
 
   // Báo cáo các câu không tự click được: lý do + HTML của khối câu (để gửi lại khi cần chẩn đoán)
   let lastReport = '';
-  function buildFailReport(failed, skipped) {
+  function buildFailReport(failed, skipped, snap) {
     const blocks = findBlocks();
     const lines = [
       'AZOTA AUTO · báo cáo lỗi (trang cuộn)',
@@ -851,8 +851,8 @@
       const bl = blocks.find(b => +b.no === no);
       lines.push('--- Câu ' + no + ' ---');
       lines.push('Lý do: ' + it.why);
-      if (bl) {
-        const html = bl.el.outerHTML;
+      const html = snap[no] || (bl ? bl.el.outerHTML : '');
+      if (html) {
         lines.push(html.length > 4000 ? html.slice(0, 4000) + ' …(đã cắt)' : html);
       }
       lines.push('');
@@ -864,7 +864,8 @@
     if (autoRunning) return;
     if (!isScrollPractice()) { logAuto('Lỗi: không phải trang làm bài cuộn'); return; }
     autoRunning = true; autoStop = false;
-    let done = 0; const skipped = [], failed = [];
+    let done = 0; const skipped = [], failed = [], snap = {};
+    const startHref = location.href;
     try {
       const seen = new Set(); let idle = 0;
       while (!autoStop && idle < 3) {
@@ -873,8 +874,12 @@
         idle = 0;
       for (const bl of pending) {
         if (autoStop) break;
+        if (location.href !== startHref || !/\/test\/take/.test(location.pathname)) {
+          autoStop = true; logAuto('Trang đã đổi, dừng Auto'); break;
+        }
         seen.add(bl.no);
         const no = bl.no;
+        snap[no] = bl.el.outerHTML;   // chụp trước khi thao tác: báo cáo vẫn có HTML nếu trang đổi sau đó
         bl.el.scrollIntoView({ block: 'center' }); await sleep(300);
         NM.clear(); CMM.clear();
         const S = blockNodes(bl.el);
@@ -920,7 +925,7 @@
       autoRunning = false;
       blockedHref = location.href;   // chạy xong thì không tự chạy lại ở trang này (bấm Start để chạy lại)
     }
-    lastReport = buildFailReport(failed, skipped);
+    lastReport = buildFailReport(failed, skipped, snap);
     logAuto(`Xong ${done} câu` + (skipped.length ? ' · không có trong bank: ' + skipped.join(', ') : '') + (failed.length ? ' · lỗi: ' + failed.join('; ') : ''));
     renderStats();
   }
