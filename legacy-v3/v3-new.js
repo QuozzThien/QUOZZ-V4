@@ -807,6 +807,16 @@
     }
     return best && bs >= 0.7 && bs - second >= 0.1 ? best.el : null;
   }
+  // Khớp theo hàng: hàng (hoặc khối Đúng/Sai) chứa đúng nội dung đáp án; lấy phần tử nhỏ nhất nếu lồng nhau
+  const compactOf = t => norm(t).replace(/[ \/]/g, '');
+  function rowByContain(cands, text) {
+    const tc = compactOf(text); if (!tc) return null;
+    const hits = cands.filter(el => compactOf(textOf(el)).includes(tc));
+    if (!hits.length) return null;
+    hits.sort((a, b) => textOf(a).length - textOf(b).length);
+    if (hits.length === 1 || textOf(hits[0]).length < textOf(hits[1]).length) return hits[0];
+    return null;
+  }
   function optionRowFor(root, optText) {
     const cands = [...root.querySelectorAll('.item-answer')].map(el => ({ el, text: textOf(el).replace(/\s+/g, ' ') }));
     const row = bestByTokens(cands, optText);
@@ -853,7 +863,13 @@
       lines.push('Lý do: ' + it.why);
       const html = snap[no] || (bl ? bl.el.outerHTML : '');
       if (html) {
-        lines.push(html.length > 4000 ? html.slice(0, 4000) + ' …(đã cắt)' : html);
+        lines.push('[Đề]');
+        lines.push(html.length > 2000 ? html.slice(0, 2000) + ' …(đã cắt)' : html);
+      }
+      const ans = snap['ans' + no] || '';
+      if (ans) {
+        lines.push('[Đáp án]');
+        lines.push(ans.length > 5000 ? ans.slice(0, 5000) + ' …(đã cắt)' : ans);
       }
       lines.push('');
     }
@@ -880,6 +896,8 @@
         seen.add(bl.no);
         const no = bl.no;
         snap[no] = bl.el.outerHTML;   // chụp trước khi thao tác: báo cáo vẫn có HTML nếu trang đổi sau đó
+        const ansEl = bl.el.querySelector('.list-answer') || bl.el.querySelector('app-question-answer-view-for-student-at-step-page, app-question-answer-view-for-student-at-full-test');
+        snap['ans' + no] = ansEl ? ansEl.outerHTML : '';
         bl.el.scrollIntoView({ block: 'center' }); await sleep(300);
         NM.clear(); CMM.clear();
         const S = blockNodes(bl.el);
@@ -892,6 +910,11 @@
           const el = locate(norm(m.opts[j]), S.nodes, m.opts.filter((_, k) => k !== j).map(norm));
           let btn = el && optionLetterBtn(el);
           let row = btn ? btn.closest('.item-answer') || el : null;
+          if (!btn) {
+            const hit = rowByContain([...bl.el.querySelectorAll('.item-answer')], m.opts[j]);
+            const lb = hit && [...hit.querySelectorAll('button')].find(isLetter);
+            if (lb) { btn = lb; row = hit; }
+          }
           if (!btn) { const fb = optionRowFor(bl.el, m.opts[j]); if (fb) { btn = fb; row = fb.closest('.item-answer') || fb; } }
           if (!btn) { failed.push(no + (el ? ' (không thấy nút A–D)' : ' (không thấy chữ đáp án)')); continue; }
           if (!(await pick(btn, row || el))) { failed.push(no + ' (bấm không được chọn)'); continue; }
@@ -900,6 +923,11 @@
           for (const st of m.st) {
             const el = locate(norm(st.t), S.nodes, m.st.filter(x => x !== st).map(x => norm(x.t)));
             let b = el ? tfRowBtn(el, st.v) : null;
+            if (!b) {
+              const cands = [...bl.el.querySelectorAll('div')].filter(d => [...d.querySelectorAll('button')].filter(isTF).length === 2);
+              const hit = rowByContain(cands, st.t);
+              if (hit) b = [...hit.querySelectorAll('button')].filter(isTF).find(x => /^đúng$/i.test(x.textContent.trim()) === st.v) || null;
+            }
             if (!b) b = tfRowFor(bl.el, st.t, st.v);
             if (!b) { why = 'không thấy ý "' + cut(st.t, 20) + '"'; break; }
             if (!isSel(b)) { b.click(); await sleep(sp(SPD.tf)); }
