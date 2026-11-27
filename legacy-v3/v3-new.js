@@ -319,7 +319,7 @@
   /* =====================================================================
    * PHẦN 2 — TÔ ĐÁP ÁN
    * ===================================================================== */
-  const MATH_SKIP = '.katex-mathml,annotation,mjx-assistive-mml,.MJX_Assistive_MathML';
+  const MATH_SKIP = '.katex-mathml,annotation,mjx-math';   // mjx-assistive-mml (chữ ẩn của MathJax) được giữ để khớp đề
   const inUi = el => !!(el && el.closest && el.closest('.aza-ui,.aza-badge,.aza-splash'));
   function textOf(el) {
     let s = '';
@@ -344,7 +344,7 @@
       let ok = vis.get(p);
       if (ok === undefined) {
         ok = !inUi(p) && !p.closest(MATH_SKIP);
-        if (ok) { const r = p.getBoundingClientRect(); ok = r.height > 0 && r.bottom >= 0 && r.top <= window.innerHeight * 1.2; }
+        if (ok && !p.closest('mjx-assistive-mml,.MJX_Assistive_MathML')) { const r = p.getBoundingClientRect(); ok = r.height > 0 && r.bottom >= 0 && r.top <= window.innerHeight * 1.2; }
         vis.set(p, ok);
       }
       if (!ok) continue;
@@ -795,11 +795,70 @@
   }
 
 
+  // Khớp mờ khi khớp chính xác thất bại (đáp án có công thức, chữ dài hơn ngân hàng): chọn hàng có nhiều từ trùng nhất, phải rõ ràng
+  function bestByTokens(cands, target) {
+    const T = new Set(tok(target)); if (!T.size) return null;
+    let best = null, bs = 0, second = 0;
+    for (const c of cands) {
+      const R = new Set(tok(c.text));
+      let k = 0; for (const t of T) if (R.has(t)) k++;
+      const sc = k / T.size - c.text.length / 100000;   // hòa điểm: chọn phần tử nhỏ hơn
+      if (sc > bs) { second = bs; bs = sc; best = c; } else if (sc > second) second = sc;
+    }
+    return best && bs >= 0.7 && bs - second >= 0.1 ? best.el : null;
+  }
+  function optionRowFor(root, optText) {
+    const cands = [...root.querySelectorAll('.item-answer')].map(el => ({ el, text: textOf(el).replace(/\s+/g, ' ') }));
+    const row = bestByTokens(cands, optText);
+    return row ? row.querySelector('button') : null;
+  }
+  function tfRowFor(root, stmt, v) {
+    const cands = [];
+    for (const el of root.querySelectorAll('div')) {
+      const bs = [...el.querySelectorAll('button')].filter(isTF);
+      if (bs.length !== 2) continue;
+      cands.push({ el, text: textOf(el).replace(/\s+/g, ' ') });
+    }
+    const row = bestByTokens(cands, stmt);
+    if (!row) return null;
+    return [...row.querySelectorAll('button')].filter(isTF).find(x => /^đúng$/i.test(x.textContent.trim()) === v) || null;
+  }
+
   // ---- Trang cuộn (làm nhiều câu một lượt, không có "Câu x/y"): chỉ chạy khi bấm Start, không bấm Nộp bài ----
   const isScrollPractice = () =>
     /\/test\/take/.test(location.pathname) &&
     !!document.querySelector('button.btn-sm.btn-primary') &&
     findBlocks().length > 0;
+
+  // Báo cáo các câu không tự click được: lý do + HTML của khối câu (để gửi lại khi cần chẩn đoán)
+  let lastReport = '';
+  function buildFailReport(failed, skipped) {
+    const blocks = findBlocks();
+    const lines = [
+      'AZOTA AUTO · báo cáo lỗi (trang cuộn)',
+      'Trang: ' + location.href,
+      'Thời điểm: ' + new Date().toLocaleString(),
+      'Không có trong bank: ' + (skipped.length ? skipped.join(', ') : '-'),
+      'Không tự click: ' + (failed.length + skipped.length),
+      ''
+    ];
+    const items = [
+      ...failed.map(f => ({ no: parseInt(f, 10), why: f.replace(/^\d+\s*/, '') })),
+      ...skipped.map(n => ({ no: +n, why: 'không có trong ngân hàng' })),
+    ].sort((a, b) => a.no - b.no);
+    for (const it of items) {
+      const no = it.no;
+      const bl = blocks.find(b => +b.no === no);
+      lines.push('--- Câu ' + no + ' ---');
+      lines.push('Lý do: ' + it.why);
+      if (bl) {
+        const html = bl.el.outerHTML;
+        lines.push(html.length > 4000 ? html.slice(0, 4000) + ' …(đã cắt)' : html);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
 
   async function scrollAuto() {
     if (autoRunning) return;
@@ -826,28 +885,32 @@
         if (m.type === 'mc') {
           const j = m.a[0];
           const el = locate(norm(m.opts[j]), S.nodes, m.opts.filter((_, k) => k !== j).map(norm));
-          const btn = el && optionLetterBtn(el);
-          if (!btn || !(await pick(btn, btn.closest('.item-answer') || el))) { failed.push(no); continue; }
+          let btn = el && optionLetterBtn(el);
+          let row = btn ? btn.closest('.item-answer') || el : null;
+          if (!btn) { const fb = optionRowFor(bl.el, m.opts[j]); if (fb) { btn = fb; row = fb.closest('.item-answer') || fb; } }
+          if (!btn) { failed.push(no + (el ? ' (không thấy nút A–D)' : ' (không thấy chữ đáp án)')); continue; }
+          if (!(await pick(btn, row || el))) { failed.push(no + ' (bấm không được chọn)'); continue; }
         } else if (m.type === 'tf') {
-          let ok = true;
+          let why = '';
           for (const st of m.st) {
             const el = locate(norm(st.t), S.nodes, m.st.filter(x => x !== st).map(x => norm(x.t)));
-            const b = el && tfRowBtn(el, st.v);
-            if (!b) { ok = false; break; }
+            let b = el ? tfRowBtn(el, st.v) : null;
+            if (!b) b = tfRowFor(bl.el, st.t, st.v);
+            if (!b) { why = 'không thấy ý "' + cut(st.t, 20) + '"'; break; }
             if (!isSel(b)) { b.click(); await sleep(sp(SPD.tf)); }
-            if (!isSel(b)) { ok = false; break; }
+            if (!isSel(b)) { why = 'bấm Đúng/Sai không được chọn'; break; }
           }
-          if (!ok) { failed.push(no); continue; }
+          if (why) { failed.push(no + ' (' + why + ')'); continue; }
         } else if (m.type === 'sa') {
           const inp = bl.el.querySelector('input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea');
           const want = String(m.ans[0]);
-          if (!inp) { failed.push(no); continue; }
+          if (!inp) { failed.push(no + ' (không thấy ô nhập)'); continue; }
           const proto = inp.tagName === 'TEXTAREA' ? w_TextArea : w_Input;
           proto.set.call(inp, want);
           inp.dispatchEvent(new Event('input', { bubbles: true }));
           inp.dispatchEvent(new Event('change', { bubbles: true }));
           await sleep(300);
-          if (inp.value.trim() !== want) { failed.push(no); continue; }
+          if (inp.value.trim() !== want) { failed.push(no + ' (ô nhập không nhận giá trị)'); continue; }
         }
         done++;
         await sleep(sp(SPD.next) / 2);
@@ -857,7 +920,8 @@
       autoRunning = false;
       blockedHref = location.href;   // chạy xong thì không tự chạy lại ở trang này (bấm Start để chạy lại)
     }
-    logAuto(`Xong ${done} câu` + (skipped.length ? ' · không có trong bank: ' + skipped.join(', ') : '') + (failed.length ? ' · lỗi: ' + failed.join(', ') : ''));
+    lastReport = buildFailReport(failed, skipped);
+    logAuto(`Xong ${done} câu` + (skipped.length ? ' · không có trong bank: ' + skipped.join(', ') : '') + (failed.length ? ' · lỗi: ' + failed.join('; ') : ''));
     renderStats();
   }
   const w_Input = { set: Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set };
@@ -1084,7 +1148,7 @@
     const clean = el => {
       if (!el) return '';
       const c = el.cloneNode(true);
-      c.querySelectorAll('.aza-badge,.aza-ui,script,style,.katex-mathml,mjx-assistive-mml').forEach(x => x.remove());
+      c.querySelectorAll('.aza-badge,.aza-ui,script,style,.katex-mathml').forEach(x => x.remove());
       return c.textContent.normalize('NFC').replace(/\s+/g, ' ').trim();
     };
     const id = (b,i) => b.getAttribute('data-sticky-question-id') || b.querySelector('[data-sticky-question-id]')?.getAttribute('data-sticky-question-id') || 'index-'+i;
@@ -1154,6 +1218,15 @@
   }
 
 
+  function copyFailLog() {
+    if (!lastReport) { logAuto('Chưa có log lỗi (chạy Auto trên bài cuộn trước)'); return; }
+    const fallback = () => prompt('Copy log lỗi:', lastReport);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(lastReport).then(
+        () => logAuto('Đã copy log lỗi (' + lastReport.length + ' ký tự)'), fallback);
+    } else fallback();
+  }
+
   function buildUI() {
     styleEl = document.createElement('style'); styleEl.textContent = css; document.head.appendChild(styleEl);
     ui = h('div', 'aza-ui'); tab = h('button', 'aza-tab', '🎯');
@@ -1208,7 +1281,7 @@
     autoLog = h('div', 'aza-auto-log', 'Trạng thái: Sẵn sàng');
     addPage('auto', 'AUTO',
       h('div', 'aza-note', 'Tự chạy khi vào bài luyện tập, tự thử lại khi mạng chậm, nộp bài ở câu cuối. Dừng khi gặp câu sai.'),
-      bAutoMode, r2(bStart, bStop), autoLog);
+      bAutoMode, r2(bStart, bStop), btn('📋 COPY LOG LỖI', copyFailLog), autoLog);
 
     // ---- Tốc độ ----
     const saveSpd = () => { store.set('apa_speed', SPD); renderStats(); };
