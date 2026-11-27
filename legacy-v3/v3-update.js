@@ -795,6 +795,35 @@
   }
 
 
+  // Khớp mờ khi khớp chính xác thất bại (đáp án có công thức, chữ dài hơn ngân hàng): chọn hàng có nhiều từ trùng nhất, phải rõ ràng
+  function bestByTokens(cands, target) {
+    const T = new Set(tok(target)); if (!T.size) return null;
+    let best = null, bs = 0, second = 0;
+    for (const c of cands) {
+      const R = new Set(tok(c.text));
+      let k = 0; for (const t of T) if (R.has(t)) k++;
+      const sc = k / T.size - c.text.length / 100000;   // hòa điểm: chọn phần tử nhỏ hơn
+      if (sc > bs) { second = bs; bs = sc; best = c; } else if (sc > second) second = sc;
+    }
+    return best && bs >= 0.7 && bs - second >= 0.1 ? best.el : null;
+  }
+  function optionRowFor(root, optText) {
+    const cands = [...root.querySelectorAll('.item-answer')].map(el => ({ el, text: textOf(el).replace(/\s+/g, ' ') }));
+    const row = bestByTokens(cands, optText);
+    return row ? row.querySelector('button') : null;
+  }
+  function tfRowFor(root, stmt, v) {
+    const cands = [];
+    for (const el of root.querySelectorAll('div')) {
+      const bs = [...el.querySelectorAll('button')].filter(isTF);
+      if (bs.length !== 2) continue;
+      cands.push({ el, text: textOf(el).replace(/\s+/g, ' ') });
+    }
+    const row = bestByTokens(cands, stmt);
+    if (!row) return null;
+    return [...row.querySelectorAll('button')].filter(isTF).find(x => /^đúng$/i.test(x.textContent.trim()) === v) || null;
+  }
+
   // ---- Trang cuộn (làm nhiều câu một lượt, không có "Câu x/y"): chỉ chạy khi bấm Start, không bấm Nộp bài ----
   const isScrollPractice = () =>
     /\/test\/take/.test(location.pathname) &&
@@ -826,17 +855,18 @@
         if (m.type === 'mc') {
           const j = m.a[0];
           const el = locate(norm(m.opts[j]), S.nodes, m.opts.filter((_, k) => k !== j).map(norm));
-          const btn = el && optionLetterBtn(el);
-          if (!el) { failed.push(no + ' (không thấy chữ đáp án)'); continue; }
-          if (!btn) { failed.push(no + ' (không thấy nút A–D)'); continue; }
-          if (!(await pick(btn, btn.closest('.item-answer') || el))) { failed.push(no + ' (bấm không được chọn)'); continue; }
+          let btn = el && optionLetterBtn(el);
+          let row = btn ? btn.closest('.item-answer') || el : null;
+          if (!btn) { const fb = optionRowFor(bl.el, m.opts[j]); if (fb) { btn = fb; row = fb.closest('.item-answer') || fb; } }
+          if (!btn) { failed.push(no + (el ? ' (không thấy nút A–D)' : ' (không thấy chữ đáp án)')); continue; }
+          if (!(await pick(btn, row || el))) { failed.push(no + ' (bấm không được chọn)'); continue; }
         } else if (m.type === 'tf') {
           let why = '';
           for (const st of m.st) {
             const el = locate(norm(st.t), S.nodes, m.st.filter(x => x !== st).map(x => norm(x.t)));
-            if (!el) { why = 'không thấy ý "' + cut(st.t, 20) + '"'; break; }
-            const b = tfRowBtn(el, st.v);
-            if (!b) { why = 'không thấy nút Đúng/Sai của ý'; break; }
+            let b = el ? tfRowBtn(el, st.v) : null;
+            if (!b) b = tfRowFor(bl.el, st.t, st.v);
+            if (!b) { why = 'không thấy ý "' + cut(st.t, 20) + '"'; break; }
             if (!isSel(b)) { b.click(); await sleep(sp(SPD.tf)); }
             if (!isSel(b)) { why = 'bấm Đúng/Sai không được chọn'; break; }
           }
