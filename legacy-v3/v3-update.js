@@ -830,6 +830,36 @@
     !!document.querySelector('button.btn-sm.btn-primary') &&
     findBlocks().length > 0;
 
+  // Báo cáo các câu không tự click được: lý do + HTML của khối câu (để gửi lại khi cần chẩn đoán)
+  let lastReport = '';
+  function buildFailReport(failed, skipped) {
+    const blocks = findBlocks();
+    const lines = [
+      'AZOTA AUTO · báo cáo lỗi (trang cuộn)',
+      'Trang: ' + location.href,
+      'Thời điểm: ' + new Date().toLocaleString(),
+      'Không có trong bank: ' + (skipped.length ? skipped.join(', ') : '-'),
+      'Không tự click: ' + (failed.length + skipped.length),
+      ''
+    ];
+    const items = [
+      ...failed.map(f => ({ no: parseInt(f, 10), why: f.replace(/^\d+\s*/, '') })),
+      ...skipped.map(n => ({ no: +n, why: 'không có trong ngân hàng' })),
+    ].sort((a, b) => a.no - b.no);
+    for (const it of items) {
+      const no = it.no;
+      const bl = blocks.find(b => +b.no === no);
+      lines.push('--- Câu ' + no + ' ---');
+      lines.push('Lý do: ' + it.why);
+      if (bl) {
+        const html = bl.el.outerHTML;
+        lines.push(html.length > 4000 ? html.slice(0, 4000) + ' …(đã cắt)' : html);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
   async function scrollAuto() {
     if (autoRunning) return;
     if (!isScrollPractice()) { logAuto('Lỗi: không phải trang làm bài cuộn'); return; }
@@ -890,6 +920,7 @@
       autoRunning = false;
       blockedHref = location.href;   // chạy xong thì không tự chạy lại ở trang này (bấm Start để chạy lại)
     }
+    lastReport = buildFailReport(failed, skipped);
     logAuto(`Xong ${done} câu` + (skipped.length ? ' · không có trong bank: ' + skipped.join(', ') : '') + (failed.length ? ' · lỗi: ' + failed.join('; ') : ''));
     renderStats();
   }
@@ -1187,6 +1218,15 @@
   }
 
 
+  function copyFailLog() {
+    if (!lastReport) { logAuto('Chưa có log lỗi (chạy Auto trên bài cuộn trước)'); return; }
+    const fallback = () => prompt('Copy log lỗi:', lastReport);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(lastReport).then(
+        () => logAuto('Đã copy log lỗi (' + lastReport.length + ' ký tự)'), fallback);
+    } else fallback();
+  }
+
   function buildUI() {
     styleEl = document.createElement('style'); styleEl.textContent = css; document.head.appendChild(styleEl);
     ui = h('div', 'aza-ui'); tab = h('button', 'aza-tab', '🎯');
@@ -1241,7 +1281,7 @@
     autoLog = h('div', 'aza-auto-log', 'Trạng thái: Sẵn sàng');
     addPage('auto', 'AUTO',
       h('div', 'aza-note', 'Tự chạy khi vào bài luyện tập, tự thử lại khi mạng chậm, nộp bài ở câu cuối. Dừng khi gặp câu sai.'),
-      bAutoMode, r2(bStart, bStop), autoLog);
+      bAutoMode, r2(bStart, bStop), btn('📋 COPY LOG LỖI', copyFailLog), autoLog);
 
     // ---- Tốc độ ----
     const saveSpd = () => { store.set('apa_speed', SPD); renderStats(); };
