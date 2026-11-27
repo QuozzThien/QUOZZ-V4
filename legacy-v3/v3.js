@@ -90,6 +90,8 @@
       } else if (opts.length >= 2 && letters.length) {
         const a = [...new Set(letters.map(x => x.charCodeAt(0) - 65).filter(i => i < opts.length))];
         if (a.length) out.push({ type: 'mc', q: qt, opts: opts.map(o => clean(o.t)), a });
+      } else if (sa.length) {
+        out.push({ type: 'sa', q: qt, answers: sa.map(clean).filter(Boolean) });
       }
     }
     return out;
@@ -190,7 +192,11 @@
     const out = [];
     for (const r of raw || []) {
       if (!r || !r.q) continue;
-      if (r.type === 'sa' || r.answers) continue;   // điền ô: không hỗ trợ
+      if (r.type === 'sa' || r.answers) {
+        const ans = (r.answers || [].concat(r.a == null ? [] : r.a)).map(x => String(x).trim()).filter(Boolean);
+        if (ans.length) out.push({ type: 'sa', q: String(r.q), ans, parts: [String(r.q)] });
+        continue;
+      }
       if (r.type === 'tf' || r.stmts) {
         const st = (r.stmts || []).map(s => ({ t: stripLabel(s.t), v: !!s.v })).filter(s => s.t);
         if (st.length) out.push({ type: 'tf', q: String(r.q), st, parts: [String(r.q), ...st.map(s => s.t)] });
@@ -313,7 +319,7 @@
   /* =====================================================================
    * PHẦN 2 — TÔ ĐÁP ÁN
    * ===================================================================== */
-  const MATH_SKIP = '.katex-mathml,annotation,mjx-assistive-mml,.MJX_Assistive_MathML';
+  const MATH_SKIP = '.katex-mathml,annotation,mjx-math';   // mjx-assistive-mml (chữ ẩn của MathJax) được giữ để khớp đề
   const inUi = el => !!(el && el.closest && el.closest('.aza-ui,.aza-badge,.aza-splash'));
   function textOf(el) {
     let s = '';
@@ -338,7 +344,7 @@
       let ok = vis.get(p);
       if (ok === undefined) {
         ok = !inUi(p) && !p.closest(MATH_SKIP);
-        if (ok) { const r = p.getBoundingClientRect(); ok = r.height > 0 && r.bottom >= 0 && r.top <= window.innerHeight * 1.2; }
+        if (ok && !p.closest('mjx-assistive-mml,.MJX_Assistive_MathML')) { const r = p.getBoundingClientRect(); ok = r.height > 0 && r.bottom >= 0 && r.top <= window.innerHeight * 1.2; }
         vis.set(p, ok);
       }
       if (!ok) continue;
@@ -398,7 +404,11 @@
       if (!keep) clearMarks();
       for (const i of ids) {
         const b = BK[i];
-        if (b.type === 'mc') {
+        if (b.type === 'sa') {
+          const el = locate(norm(b.q), S.nodes) || (S.head && S.head.parentElement);
+          if (el) { lastEls.push(el); badge(el, 'Đáp án: ' + b.ans.join(' | '), 'aza-b-ok'); }
+          lines.push('✎ Điền: ' + b.ans.join(' | '));
+        } else if (b.type === 'mc') {
           for (const j of b.a) {
             const el = locate(norm(b.opts[j]), S.nodes, b.opts.filter((_, k) => k !== j).map(norm)); if (el) lastEls.push(el);
             if (el) { el.classList.add('aza-ok'); badge(el, '✓ ĐÚNG', 'aza-b-ok'); }
@@ -536,7 +546,7 @@
 
   // Chế độ luyện tập = có nút Kiểm tra / Thử lại / Câu tiếp
   // Chỉ chạy auto ở bài luyện tập từng câu. Bài cuộn (có nút "Nộp bài" nhỏ ở thanh trên) không được hỗ trợ.
-  const isPractice = () =>
+  const isPractice = () => true;
     !!document.querySelector('[azt-track-service^="take-training"]') &&
     !!getProgress() &&
     !document.querySelector('button.btn-sm.btn-primary') &&
@@ -785,6 +795,138 @@
   }
 
 
+  // Khớp mờ khi khớp chính xác thất bại (đáp án có công thức, chữ dài hơn ngân hàng): chọn hàng có nhiều từ trùng nhất, phải rõ ràng
+  function bestByTokens(cands, target) {
+    const T = new Set(tok(target)); if (!T.size) return null;
+    let best = null, bs = 0, second = 0;
+    for (const c of cands) {
+      const R = new Set(tok(c.text));
+      let k = 0; for (const t of T) if (R.has(t)) k++;
+      const sc = k / T.size - c.text.length / 100000;   // hòa điểm: chọn phần tử nhỏ hơn
+      if (sc > bs) { second = bs; bs = sc; best = c; } else if (sc > second) second = sc;
+    }
+    return best && bs >= 0.7 && bs - second >= 0.1 ? best.el : null;
+  }
+  function optionRowFor(root, optText) {
+    const cands = [...root.querySelectorAll('.item-answer')].map(el => ({ el, text: textOf(el).replace(/\s+/g, ' ') }));
+    const row = bestByTokens(cands, optText);
+    return row ? row.querySelector('button') : null;
+  }
+  function tfRowFor(root, stmt, v) {
+    const cands = [];
+    for (const el of root.querySelectorAll('div')) {
+      const bs = [...el.querySelectorAll('button')].filter(isTF);
+      if (bs.length !== 2) continue;
+      cands.push({ el, text: textOf(el).replace(/\s+/g, ' ') });
+    }
+    const row = bestByTokens(cands, stmt);
+    if (!row) return null;
+    return [...row.querySelectorAll('button')].filter(isTF).find(x => /^đúng$/i.test(x.textContent.trim()) === v) || null;
+  }
+
+  // ---- Trang cuộn (làm nhiều câu một lượt, không có "Câu x/y"): chỉ chạy khi bấm Start, không bấm Nộp bài ----
+  const isScrollPractice = () =>
+    /\/test\/take/.test(location.pathname) &&
+    !!document.querySelector('button.btn-sm.btn-primary') &&
+    findBlocks().length > 0;
+
+  // Báo cáo các câu không tự click được: lý do + HTML của khối câu (để gửi lại khi cần chẩn đoán)
+  let lastReport = '';
+  function buildFailReport(failed, skipped) {
+    const blocks = findBlocks();
+    const lines = [
+      'AZOTA AUTO · báo cáo lỗi (trang cuộn)',
+      'Trang: ' + location.href,
+      'Thời điểm: ' + new Date().toLocaleString(),
+      'Không có trong bank: ' + (skipped.length ? skipped.join(', ') : '-'),
+      'Không tự click: ' + (failed.length + skipped.length),
+      ''
+    ];
+    const items = [
+      ...failed.map(f => ({ no: parseInt(f, 10), why: f.replace(/^\d+\s*/, '') })),
+      ...skipped.map(n => ({ no: +n, why: 'không có trong ngân hàng' })),
+    ].sort((a, b) => a.no - b.no);
+    for (const it of items) {
+      const no = it.no;
+      const bl = blocks.find(b => +b.no === no);
+      lines.push('--- Câu ' + no + ' ---');
+      lines.push('Lý do: ' + it.why);
+      if (bl) {
+        const html = bl.el.outerHTML;
+        lines.push(html.length > 4000 ? html.slice(0, 4000) + ' …(đã cắt)' : html);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
+  }
+
+  async function scrollAuto() {
+    if (autoRunning) return;
+    if (!isScrollPractice()) { logAuto('Lỗi: không phải trang làm bài cuộn'); return; }
+    autoRunning = true; autoStop = false;
+    let done = 0; const skipped = [], failed = [];
+    try {
+      const seen = new Set(); let idle = 0;
+      while (!autoStop && idle < 3) {
+        const pending = findBlocks().filter(b => !seen.has(b.no));
+        if (!pending.length) { idle++; await sleep(1000); continue; }
+        idle = 0;
+      for (const bl of pending) {
+        if (autoStop) break;
+        seen.add(bl.no);
+        const no = bl.no;
+        bl.el.scrollIntoView({ block: 'center' }); await sleep(300);
+        NM.clear(); CMM.clear();
+        const S = blockNodes(bl.el);
+        const ids = decide(rank(S.text));
+        const m = ids.length ? BK[ids[0]] : null;
+        if (!m) { skipped.push(no); continue; }
+        logAuto(`Câu ${no}: ${m.type}`);
+        if (m.type === 'mc') {
+          const j = m.a[0];
+          const el = locate(norm(m.opts[j]), S.nodes, m.opts.filter((_, k) => k !== j).map(norm));
+          let btn = el && optionLetterBtn(el);
+          let row = btn ? btn.closest('.item-answer') || el : null;
+          if (!btn) { const fb = optionRowFor(bl.el, m.opts[j]); if (fb) { btn = fb; row = fb.closest('.item-answer') || fb; } }
+          if (!btn) { failed.push(no + (el ? ' (không thấy nút A–D)' : ' (không thấy chữ đáp án)')); continue; }
+          if (!(await pick(btn, row || el))) { failed.push(no + ' (bấm không được chọn)'); continue; }
+        } else if (m.type === 'tf') {
+          let why = '';
+          for (const st of m.st) {
+            const el = locate(norm(st.t), S.nodes, m.st.filter(x => x !== st).map(x => norm(x.t)));
+            let b = el ? tfRowBtn(el, st.v) : null;
+            if (!b) b = tfRowFor(bl.el, st.t, st.v);
+            if (!b) { why = 'không thấy ý "' + cut(st.t, 20) + '"'; break; }
+            if (!isSel(b)) { b.click(); await sleep(sp(SPD.tf)); }
+            if (!isSel(b)) { why = 'bấm Đúng/Sai không được chọn'; break; }
+          }
+          if (why) { failed.push(no + ' (' + why + ')'); continue; }
+        } else if (m.type === 'sa') {
+          const inp = bl.el.querySelector('input:not([type=checkbox]):not([type=radio]):not([type=hidden]), textarea');
+          const want = String(m.ans[0]);
+          if (!inp) { failed.push(no + ' (không thấy ô nhập)'); continue; }
+          const proto = inp.tagName === 'TEXTAREA' ? w_TextArea : w_Input;
+          proto.set.call(inp, want);
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+          await sleep(300);
+          if (inp.value.trim() !== want) { failed.push(no + ' (ô nhập không nhận giá trị)'); continue; }
+        }
+        done++;
+        await sleep(sp(SPD.next) / 2);
+      }
+      }
+    } finally {
+      autoRunning = false;
+      blockedHref = location.href;   // chạy xong thì không tự chạy lại ở trang này (bấm Start để chạy lại)
+    }
+    lastReport = buildFailReport(failed, skipped);
+    logAuto(`Xong ${done} câu` + (skipped.length ? ' · không có trong bank: ' + skipped.join(', ') : '') + (failed.length ? ' · lỗi: ' + failed.join('; ') : ''));
+    renderStats();
+  }
+  const w_Input = { set: Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set };
+  const w_TextArea = { set: Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set };
+
   /* =====================================================================
    * PHẦN 4 — GIAO DIỆN HACKER (menu gọn, đi sâu) + MÀN MỞ ĐẦU
    * ===================================================================== */
@@ -975,6 +1117,30 @@
     // Intro stays until user interaction.
   }
 
+  // Đáp án điền số: các phần tử lá đứng sau nhãn "Đáp án được chấp nhận", dừng ở "Thí sinh..."
+  function saAnswers(b) {
+    const txt = el => (el.textContent || '').normalize('NFC').replace(/\s+/g, ' ').trim();
+    const all = [...b.querySelectorAll('*')];
+    const i = all.findIndex(e => e.children.length === 0 && /^Đáp án được chấp nhận/i.test(txt(e)));
+    const out = [];
+    if (i >= 0) {
+      for (const e of all.slice(i + 1)) {
+        if (e.children.length) continue;
+        const t = txt(e);
+        if (!t) continue;
+        if (/^(Thí sinh|Giải thích|Câu\s*\d)/i.test(t)) break;
+        out.push(t);
+      }
+    }
+    if (!out.length) {
+      for (const e of b.querySelectorAll('.keyText')) {
+        const t = txt(e).replace(/^Đáp án được chấp nhận\s*:?\s*/i, '');
+        if (/^Đáp án được chấp nhận/i.test(txt(e)) && t) out.push(t);
+      }
+    }
+    return [...new Set(out)];
+  }
+
   async function extractReviewV2(report) {
     if (!location.pathname.includes('/test/answer-test/')) throw Error('Chỉ hỗ trợ trang xem đáp án.');
     const href = location.href, selector = 'app-question-for-student-at-review-page';
@@ -982,7 +1148,7 @@
     const clean = el => {
       if (!el) return '';
       const c = el.cloneNode(true);
-      c.querySelectorAll('.aza-badge,.aza-ui,script,style,.katex-mathml,mjx-assistive-mml').forEach(x => x.remove());
+      c.querySelectorAll('.aza-badge,.aza-ui,script,style,.katex-mathml').forEach(x => x.remove());
       return c.textContent.normalize('NFC').replace(/\s+/g, ' ').trim();
     };
     const id = (b,i) => b.getAttribute('data-sticky-question-id') || b.querySelector('[data-sticky-question-id]')?.getAttribute('data-sticky-question-id') || 'index-'+i;
@@ -1001,7 +1167,8 @@
         const a = [...new Set((answer.match(/[A-H]/gi)||[]).map(l=>opts.findIndex(o=>o.label===l.toUpperCase())))];
         if (a.length && a.every(i=>i>=0)) return {type:'mc',q,opts:opts.map(o=>o.text),a};
       }
-      return null;   // điền ô: không hỗ trợ
+      const ans = saAnswers(b);
+      return ans.length ? {type:'sa', q, answers: ans} : null;
     }
     const found = new Map(), known = new Map(), positions = new Map(), unsupported = new Set();
     const x = window.scrollX, y = window.scrollY;
@@ -1051,6 +1218,15 @@
   }
 
 
+  function copyFailLog() {
+    if (!lastReport) { logAuto('Chưa có log lỗi (chạy Auto trên bài cuộn trước)'); return; }
+    const fallback = () => prompt('Copy log lỗi:', lastReport);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(lastReport).then(
+        () => logAuto('Đã copy log lỗi (' + lastReport.length + ' ký tự)'), fallback);
+    } else fallback();
+  }
+
   function buildUI() {
     styleEl = document.createElement('style'); styleEl.textContent = css; document.head.appendChild(styleEl);
     ui = h('div', 'aza-ui'); tab = h('button', 'aza-tab', '🎯');
@@ -1095,7 +1271,7 @@
       autoOn = true; store.set('apa_auto', true);
       blockedHref = null; restarts = 0; retryAt = 0;
       logAuto('Bắt đầu...'); renderStats();
-      autoLoop();
+      if (isScrollPractice()) scrollAuto(); else autoLoop();
     }, 'go');
     const bStop = btn('■ STOP', () => {
       autoStop = true; autoOn = false; store.set('apa_auto', false);
@@ -1105,7 +1281,7 @@
     autoLog = h('div', 'aza-auto-log', 'Trạng thái: Sẵn sàng');
     addPage('auto', 'AUTO',
       h('div', 'aza-note', 'Tự chạy khi vào bài luyện tập, tự thử lại khi mạng chậm, nộp bài ở câu cuối. Dừng khi gặp câu sai.'),
-      bAutoMode, r2(bStart, bStop), autoLog);
+      bAutoMode, r2(bStart, bStop), btn('📋 COPY LOG LỖI', copyFailLog), autoLog);
 
     // ---- Tốc độ ----
     const saveSpd = () => { store.set('apa_speed', SPD); renderStats(); };
@@ -1209,10 +1385,25 @@
   function autoWatch() {
     if (!autoStartOn || autoRunning || !bankCount) return;
     if (blockedHref === location.href || Date.now() < retryAt) return;
-    if (!isPractice() || !getProgress()) return;
-    logAuto('Tự chạy: đã vào bài luyện tập');
-    autoOn = true; renderStats();
-    autoLoop();
+    if (isScrollPractice()) {
+      // Bài cuộn: tự chạy một lần khi vào trang; sau đó không lặp lại ở trang này
+      blockedHref = location.href;
+      logAuto('Tự chạy: đã vào bài cuộn');
+      autoOn = true; renderStats();
+      scrollAuto();
+      return;
+    }
+    if (isPractice() && getProgress()) {
+      logAuto('Tự chạy: đã vào bài luyện tập');
+      autoOn = true; renderStats();
+      autoLoop();
+      return;
+    }
+    if (isScrollPractice()) {
+      logAuto('Tự chạy: đã vào bài làm cuộn');
+      autoOn = true; renderStats();
+      scrollAuto();
+    }
   }
 
   function start() {
