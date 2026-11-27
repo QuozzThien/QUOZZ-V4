@@ -190,23 +190,26 @@
 
   // Làm sạch chữ từ bank cũ: bỏ "í" thừa đứng trước số (phần hiển thị MathJax), gộp khoảng trắng
   const fixT = t => String(t == null ? '' : t).replace(/í(?=[\d,.])/g, '').replace(/\s+/g, ' ').trim();
+  let canonBad = 0;   // số câu hỏng bị bỏ qua lần nạp gần nhất
+  const alnum = t => (String(t).match(/[\p{L}\p{N}]/gu) || []).length;
   function canon(raw) {
     const out = [];
     for (const r of raw || []) {
       if (!r || !r.q) continue;
+      if (alnum(r.q) < 12) { canonBad++; continue; }
       if (r.type === 'sa' || r.answers) {
         const ans = (r.answers || [].concat(r.a == null ? [] : r.a)).map(fixT).filter(Boolean);
         // đáp án điền số: chỉ lấy phần số (bỏ đơn vị và các mảnh công thức còn sót)
         const num = ans.length ? (ans[0].match(/^[\d.,]+/) || [ans[0]])[0] : '';
-        if (num) out.push({ type: 'sa', q: fixT(r.q), ans: [num], parts: [fixT(r.q)] });
+        if (num) out.push({ type: 'sa', q: fixT(r.q), ans: [num], parts: [fixT(r.q)] }); else canonBad++;
         continue;
       }
       if (r.type === 'tf' || r.stmts) {
         const st = (r.stmts || []).map(s => ({ t: fixT(stripLabel(s.t)), v: !!s.v })).filter(s => s.t);
-        if (st.length) out.push({ type: 'tf', q: fixT(r.q), st, parts: [fixT(r.q), ...st.map(s => s.t)] });
+        if (st.length && st.every(x => alnum(x.t) >= 3)) out.push({ type: 'tf', q: fixT(r.q), st, parts: [fixT(r.q), ...st.map(s => s.t)] }); else canonBad++;
       } else {
         const opts = (r.opts || []).map(o => fixT(stripLabel(o))), a = resolveAns(r.a, opts);
-        if (opts.length >= 2 && a.length) out.push({ type: 'mc', q: fixT(r.q), opts, a, parts: [fixT(r.q), ...opts] });
+        if (opts.length >= 2 && a.length && opts.every(o => alnum(o) >= 1)) out.push({ type: 'mc', q: fixT(r.q), opts, a, parts: [fixT(r.q), ...opts] }); else canonBad++;
       }
     }
     return out;
@@ -227,6 +230,7 @@
   }
 
   function loadBank(raw) {
+    canonBad = 0;
     const items = [], dup = new Set();
     for (const it of canon(raw)) { const k = fingerprint(it); if (!dup.has(k)) { dup.add(k); items.push(it); } }
     const df = new Map(); let N = 0;
@@ -897,6 +901,7 @@
     const lines = [
       'AZOTA AUTO · báo cáo lỗi (trang cuộn) · ' + VERSION,
       'Trang: ' + location.href,
+      'Ngân hàng: ' + bankCount + ' câu · bỏ qua hỏng: ' + canonBad,
       'Thời điểm: ' + new Date().toLocaleString(),
       'Không có trong bank: ' + (skipped.length ? skipped.join(', ') : '-'),
       'Không tự click: ' + (failed.length + skipped.length),
@@ -907,7 +912,7 @@
       ...skipped.map(n => ({ no: +n, why: 'không có trong ngân hàng' })),
     ].sort((a, b) => a.no - b.no);
     const cnt = {};
-    for (const it of items) { const k = it.why.replace(/\(.*$/, '').replace(/["“].*$/, '').trim(); cnt[k] = (cnt[k] || 0) + 1; }
+    for (const it of items) { const k = it.why.replace(/[()]/g, '').replace(/["“].*$/, '').trim(); cnt[k] = (cnt[k] || 0) + 1; }
     lines.splice(5, 0, 'Tóm tắt: ' + (Object.keys(cnt).map(k => cnt[k] + ' × ' + k).join(' · ') || 'không có lỗi'));
     for (const it of items) {
       const no = it.no;
@@ -1104,7 +1109,7 @@
   function renderStats() {
     if (!ui) return;
     stats.textContent = '✓ ' + matched.size + ' khớp · ✗ ' + missed.size + ' chưa · bank ' + bankCount;
-    dInfo.textContent = 'Bank: ' + bankCount + ' câu';
+    dInfo.textContent = 'Bank: ' + bankCount + ' câu' + (canonBad ? ' · ⚠ bỏ ' + canonBad + ' câu hỏng: Xóa hết rồi trích xuất lại' : '');
     bOn.textContent = on ? 'PAINT: ON' : 'PAINT: OFF';
     bAutoMode.textContent = 'Tự chạy khi vào luyện tập: ' + (autoStartOn ? 'ON' : 'OFF');
     homeSubs.auto.textContent = autoRunning ? 'đang chạy' : (autoStartOn ? 'tự chạy' : 'tắt');
@@ -1297,7 +1302,7 @@
       localStorage.setItem('apa_bank',JSON.stringify(next));
       userBank=next; bankCount=loadBank(userBank);
       cache.clear(); lastPaintKey=''; renderStats();
-      setStatus('Đọc '+result.items.length+'/'+result.total+' · Thêm '+stat.added+' · Thiếu '+result.skipped.join(','));
+      setStatus('Đọc '+result.items.length+'/'+result.total+' · Thêm '+stat.added+' · Bỏ hỏng '+(stat.invalid||0)+' · Thiếu '+result.skipped.join(','));
       await toClip(JSON.stringify(result.items,null,2),'Đã copy JSON · Bank '+bankCount+' câu · Thêm '+stat.added);
     } catch(e) {setStatus('Lỗi V2: '+e.message);}
   }
